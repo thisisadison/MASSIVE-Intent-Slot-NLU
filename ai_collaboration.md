@@ -1,18 +1,16 @@
 # SC4002 Group Assignment: AI Collaboration Log (Stage 2)
 
-- **Group ID:** <group id>
-- **AI tool / model used:** <e.g. Claude, model name>
-- **Dates:** <start date> to <end date>
+- **Group ID:** G52
+- **Dates:** 30 October 2026 to <end date>
 
-Full, unedited Stage 2 chat history with the AI, copied exactly as it appeared. User messages are quoted; AI replies are shown as normal text.
-
-## Chat 1: <name of group member>
-
+## Chat 1
+### Owner: Tan Jun Wei, Adison
+### AI tool / model used: Claude, Opus 5.5
 ---
 
 **User**
 
-> hi! ive attached the instructions pdf for my nlp group project and my github repo (https://github.com/thisisadison/SC4002). ive finished stage 1 and need help with stage 2.
+> hello chat. ive attached the instructions pdf for my nlp group project and my github repo (https://github.com/thisisadison/SC4002). ive finished stage 1 and need help with stage 2.
 >
 > the task is joint intent classification and slot filling on amazon massive (en-US), with one model for both. its graded on intent accuracy and slot micro f1. rules: max 20M parameters including word vectors, no pretrained models except word vectors, only train on the training split.
 >
