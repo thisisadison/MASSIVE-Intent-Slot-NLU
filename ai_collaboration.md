@@ -1,16 +1,18 @@
 # SC4002 Group Assignment: AI Collaboration Log (Stage 2)
 
-- **Group ID:** G52
-- **Dates:** 30 October 2026 to <end date>
+- **Group ID:** <group id>
+- **AI tool / model used:** <e.g. Claude, model name>
+- **Dates:** <start date> to <end date>
 
-## Chat 1
-### Owner: Tan Jun Wei, Adison
-### AI tool / model used: Claude, Opus 5.5
+Full, unedited Stage 2 chat history with the AI, copied exactly as it appeared. User messages are quoted; AI replies are shown as normal text.
+
+## Chat 1: <name of group member>
+
 ---
 
-**User**
+**User · 1**
 
-> hello chat. ive attached the instructions pdf for my nlp group project and my github repo (https://github.com/thisisadison/SC4002). ive finished stage 1 and need help with stage 2.
+> hi! ive attached the instructions pdf for my nlp group project and my github repo (https://github.com/thisisadison/SC4002). ive finished stage 1 and need help with stage 2.
 >
 > the task is joint intent classification and slot filling on amazon massive (en-US), with one model for both. its graded on intent accuracy and slot micro f1. rules: max 20M parameters including word vectors, no pretrained models except word vectors, only train on the training split.
 >
@@ -20,7 +22,7 @@
 >
 > can you look at my code and results and tell me whats holding the model back? then suggest improvements one at a time, ranked by how much you think theyd help the test scores, and explain why each one should work. dont suggest stuff i already have. ill test each one before moving on.
 
-**AI**
+**AI · 1**
 
 Read your notebook and training log; now running a few quick data checks to back up the diagnosis.
 
@@ -90,11 +92,93 @@ Send me the validation and test numbers when you have them, and we'll move on to
 
 ---
 
-**User**
+**User · 2**
+
+> ok i ran #1 (packing), everything else same as baseline (seed, adam 0.001, 40 epochs).
+>
+> best epoch 26: intent 81.36%, slot f1 66.49%, combined 73.93%
+> baseline was epoch 33: intent 76.78%, slot f1 67.82%, combined 72.30%
+>
+> so your prediction was right, intent went up about 4.6 and slot f1 barely moved. intent also starts way higher now, 35% after epoch 1 vs stuck at 6% for the baseline.
+>
+> slot f1 actually dropped a bit (about 1.3) tho. is that just noise or is packing doing something to the tags? also val loss still goes up after epoch 13 so its still overfitting.
+>
+> im keeping packing. can we move on to #2 bidirectional?
+
+**AI · 2**
+
+## Is the slot F1 drop real?
+
+It's most likely noise plus checkpoint selection, not packing changing how tags are computed.
+
+* Same weights give the same tags. In a one-direction LSTM, the tag at word i depends only on words 1 to i, and padding comes after the last real word. Packing only changes what the intent head reads.
+* Training takes a different path. The intent head now sends different gradients into the shared LSTM and embeddings, so the final weights differ slightly.
+* The epochs don't line up. Your checkpoint was picked mostly for intent. Slot F1 moves ±0.5–1 point between epochs, and the baseline's best slot F1 was 68.04 at epoch 39, not its chosen epoch 33.
+
+A check for the report: load `stage1_adam_base.pt` into the packed model and evaluate on validation. Slot F1 should come out at 67.82% again (allow tiny floating-point differences), while intent changes.
+
+Overfitting is expected because there's no regularisation yet. Dropout (#4) fixes it.
+
+## #2: bidirectional LSTM
+
+Add it as a new class. The Stage-1 evaluation cell still needs `CustomMassiveModel` unchanged.
+
+```python
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
+class BiLSTMMassiveModel(nn.Module):
+    def __init__(self, embedding_dim, hidden_dim, vocab_size, num_tags, num_intent):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.word_embeddings = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True, bidirectional=True)
+        # forward + backward states are concatenated, so heads take 2 * hidden_dim
+        self.hidden2tag = nn.Linear(2 * hidden_dim, num_tags)
+        self.hidden2intent = nn.Linear(2 * hidden_dim, num_intent)
+
+    def forward(self, sentence):
+        lengths = (sentence != 0).sum(dim=1).cpu()
+        embeds = self.word_embeddings(sentence)
+        packed = pack_padded_sequence(embeds, lengths, batch_first=True, enforce_sorted=False)
+        packed_out, (h, c) = self.lstm(packed)
+        lstm_out, _ = pad_packed_sequence(packed_out, batch_first=True,
+                                          total_length=sentence.size(1))
+        tag_space = self.hidden2tag(lstm_out)
+
+        # h[0] = forward state at last real word, h[1] = backward state at first word
+        intent_space = self.hidden2intent(torch.cat([h[0], h[1]], dim=1))
+
+        return tag_space, intent_space
+```
+
+```python
+torch.manual_seed(SEED)
+
+model = BiLSTMMassiveModel(EMBEDDING_DIM, HIDDEN_DIM, len(word_to_idx),
+                           len(tag_to_idx), len(intent_to_idx))
+optimizer = optim.Adam(model.parameters(), lr=LEARNING_RATE_ADAM)
+checkpoint_path = "../checkpoints/stage2_bilstm.pt"
+
+history_bilstm, best_epoch_bilstm, best_score_bilstm = train_model(
+    model, optimizer, NUM_EPOCHS_ADAM, checkpoint_path
+)
+```
+
+The total parameter count should print 808,839. No other code changes.
+
+Why it helps: each word's tag can now see the words after it, which is what decides most slot boundaries. For example, in "play [song_name : shape of you] by ed sheeran", the word "by" marks where the song name ends. For intent, the backward state carries the opening verb ("play", "set") without it fading over a long sentence.
+
+Compare against the packed run (81.36 / 66.49) so the gain comes from this change alone.
+
+Prediction: slot F1 rises by several points, intent rises a little, and the best epoch comes earlier than 26. If slot F1 doesn't move, the slot problem is mainly unseen words, and GloVe (#3) is next.
+
+---
+
+**User · 3**
 
 > <your next message>
 
-**AI**
+**AI · 3**
 
 <the AI's next reply>
 
