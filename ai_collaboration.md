@@ -210,6 +210,73 @@ Once dropout is set, a good next step is clipping plus an LR schedule as one sta
 
 **User**
 
+> ok added dropout on the embeddings, the bilstm outputs and the intent input.
+>
+> first run with 40 epochs, the best epoch was the last one (epoch 40, combined 78.24%) and val was still improving, so like you said i trained longer. at 80 epochs the best was still near the end, so i went to 100.
+>
+> then i tried 3 dropout rates at 100 epochs, same seed:
+>
+> * 0.3: best epoch 92, intent 85.44%, slot f1 76.99%, combined 81.22%
+> * 0.4: best epoch 97, intent 85.59%, slot f1 75.50%, combined 80.54%
+> * 0.5: best epoch 95, intent 86.52%, slot f1 74.67%, combined 80.60%
+>
+> exp 2 (no dropout) was combined 75.69%, so dropout helped a lot. train loss now stays around 0.12 at 0.3 instead of going to 0.007, and val loss bottoms out later.
+>
+> what i noticed is higher dropout makes intent better but slot f1 worse. i think its because slots need the exact words, so heavy dropout on the embeddings hurts slots, while intent uses the whole sentence so it benefits more.
+>
+> also i expected higher dropout to help more since the dataset is small, but 0.3 was best overall. the gap is only about 0.6.
+>
+> im keeping 0.3. should i do your clipping + lr schedule idea next, or glove? for glove they saved that we are allowed to use pretrained word embeddings but not pretrained models.
+
+**AI**
+
+Dropout worked well, and you handled the "best epoch at the very end" problem the right way. Your explanation of the intent/slot trade-off is mostly right. My recommendation is clipping + LR schedule first (it's quick), then GloVe.
+
+### Your dropout reasoning
+
+I'd refine it slightly. The difference is how much backup evidence each task has:
+
+* Intent pools over the whole sentence, and several words usually point to the same intent ("set", "alarm", "wake"). If dropout corrupts one word's features, the others still carry the answer. That forces the model not to rely on any single word, which helps it generalise.
+* Slots are decided word by word, often from one rare word whose embedding is the main evidence. Rare words already get few training updates, and dropout weakens that signal further.
+
+One detail to check: you used one rate for all three places, including the intent input. At 0.5, intent gets heavy regularisation on its own input, which also helps it. So the trade-off you see is partly how the rate is shared, not just the tasks themselves. Using separate rates (lower on embeddings, higher on the intent input) is a reasonable later idea. But each extra knob tuned on val makes the val score a bit more optimistic, so don't go overboard.
+
+### Why higher dropout didn't help more
+
+Two things:
+
+* Noise. The three combined scores are within 0.7 of each other on one seed, so this is basically a tie. Keeping 0.3 is fine, since picking by val is the rule. Just say "0.3–0.5 performed similarly" rather than "0.3 is clearly best". Also note that if you'd picked by intent alone, 0.5 would have won. Your choice of metric decides the winner.
+* Too little capacity. Dropout fights overfitting, but with 128 units per direction, heavy dropout may be making the model too weak to fit even the training data. Compare final train loss at 0.5 vs 0.3. If it's clearly higher at 0.5, that's the sign.
+
+### Next step: clipping + LR schedule first
+
+* Your best epochs are still at 92–97 of 100. That suggests a constant LR of 0.001 is making slow progress near the end. A decaying schedule (cosine decay over a fixed number of epochs, or cut the LR when val stalls) usually lets it settle into a better point in fewer epochs. It also speeds up every experiment after this.
+* It's cheap: one or two runs at ~4s/epoch.
+* GloVe changes the training too, so having the schedule in place first means you don't have to retune afterwards.
+* On clipping: your train loss now stays around 0.12 instead of collapsing to ~0, so the epoch-33 spike may not happen anymore. Check whether spikes still show up. If clipping changes nothing, that's a fine result to report: the problem was already fixed by dropout.
+
+### GloVe: plan before you build
+
+**What's allowed:** word vectors are allowed, which covers GloVe or a plain fastText `.vec` file. The full fastText `.bin` computes vectors for new words using its own learned sub-word model. That's arguably a pretrained model, so I'd avoid it.
+
+**Which file:** GloVe 6B is lowercase, which matches MASSIVE's lowercase utterances. 100d is a direct swap for your current size. 300d usually performs better but uses much more of the budget.
+
+**Budget:** 20M total, including frozen vectors. At 300d that's roughly 60k words minus your model's size. Print total and trainable parameters separately; the report table asks for both.
+
+**Choosing the vocabulary:** train vocab plus the top-N GloVe words (GloVe's file is in frequency order). Training words missing from GloVe get a random, trainable vector at a similar scale to the GloVe vectors. You may measure how many val/test unknown words GloVe covers (good for the report), but don't let that decide which words go in.
+
+**Tokenisation mismatch:** GloVe splits "what's" into "what" + "'s", so tokens like "what's", "afi's" and "o'clock" can be missing even though they're common. Look at which frequent training tokens fail lookup. A fallback, like looking up "afi" for "afi's", can recover vectors while keeping one vector per token so your tags still line up.
+
+**Frozen vs fine-tuned:** run both. Frozen keeps unseen words in the same space as the training words, which is the whole point for unknown words. Fine-tuning adapts the vectors to this task but moves the training words away from the untouched ones. A middle option is freezing for the first few epochs, or a lower LR for the embeddings.
+
+**Still unsolved:** words outside your chosen GloVe subset still map to the untrained `<UNK>` vector. That's what word dropout handles afterwards.
+
+**Retune lightly:** GloVe vectors are more informative than random ones, so quickly recheck embedding dropout (e.g. 0.2 vs 0.3).
+
+---
+
+**User**
+
 > <your next message>
 
 **AI**
