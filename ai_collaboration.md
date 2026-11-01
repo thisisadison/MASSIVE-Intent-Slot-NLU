@@ -277,6 +277,94 @@ Two things:
 
 **User**
 
+> ok did clipping + lr schedule on top of the dropout 0.3 model. clipping at max norm 1.0, cosine annealing over the full 100 epochs down to 1e-5, same seed.
+>
+> best epoch 88: intent 85.15%, slot f1 74.59%, combined 79.87%
+> dropout 0.3 was epoch 92: intent 85.44%, slot f1 76.99%, combined 81.22%
+>
+> i am dropping it. the schedule did make training more stable but it settled at a lower score, mostly on slot f1. with dropout 0.3 the model is already stable enough without it.
+>
+> i think we can start with glove next to improve the embedding quality, since changing how the model trains doesnt seem to be giving significant gains anymore.
+
+**AI**
+
+Dropping it is reasonable. It didn't help, and keeping the simpler setup is the right default. A few notes so the report says it accurately, then on to GloVe.
+
+### About the clipping + schedule result
+
+* You changed two things at once, so you can't say which one caused the drop. That's fine to leave unresolved, just say so. It's an honest "unsuccessful experiment", and the report specifically asks for those.
+* A likely reason the drop is mostly in slots: your constant-LR model was still improving at epoch 92 of 100, so it hadn't finished learning. Cosine annealing starts shrinking the LR right away and is already at half by epoch 50. Rare slot words only get updated when they appear in a batch, so they're hurt most by smaller steps: they get fewer and smaller updates. Clipping at 1.0 on a summed two-task loss is also fairly strict and can slow learning further.
+* Noise: −1.35 combined on one seed is close to the run-to-run variation you've seen. "No improvement" is the safe claim; "made it worse" is stronger than the evidence.
+
+### GloVe
+
+Agreed, it's the right next move. Your remaining errors are now mostly about word knowledge (unknown words, rare slot values), not training mechanics. The planning points from my last message still apply. Here's a suggested run order so each comparison tells you one thing:
+
+1. GloVe 100d, frozen. Same size as your current embeddings, so this isolates the effect of pretrained vs random vectors.
+2. GloVe 100d, fine-tuned. Tells you whether adapting the vectors beats keeping unseen words in the same space.
+3. 300d (better of frozen/fine-tuned). Tells you whether richer vectors are worth the budget.
+
+Practical notes:
+
+* Reproducibility: don't put the GloVe file in your submission zip (the zip may only contain the three required files). Note in the notebook exactly which file you used (e.g. `glove.6B.100d`) and where to download it, so a marker can rerun it.
+* Parameter counts: with frozen vectors, total and trainable counts will now differ a lot. Print both. The report table has a column for each, and the 20M cap applies to the total.
+* Coverage check before training: print what fraction of training tokens find a GloVe vector, and list the most frequent ones that don't. That's where the "what's" / "o'clock" cases show up. It takes seconds and tells you if your lookup is broken before you spend a training run on it.
+* Watch the best epoch: pretrained vectors often converge faster, so the best epoch may move earlier. Keep 100 epochs for comparability.
+
+When you have results, the useful things to compare against your 81.22% are slot F1 on the test set and the val-to-test gap. The earlier ~5-point slot gap was likely due to unknown words, so if GloVe is doing its job, that gap should shrink.
+
+---
+
+**User**
+
+> ok did glove 100d on the dropout 0.3 model, no clipping or schedule. i ran both fine-tuned and frozen. i only used glove vectors for words in my training vocab, i didnt extend the vocab with other glove words because the brief says the vocab has to come from the training split.
+>
+> fine-tuned, best epoch 37: intent 86.72%, slot f1 78.42%, combined 82.57%
+> frozen, best epoch 76: intent 85.49%, slot f1 77.24%, combined 81.36%
+> dropout 0.3 was epoch 92: intent 85.44%, slot f1 76.99%, combined 81.22%
+>
+> fine-tuned is the best so far but only +1.35, less than i expected. it also overfits earlier, val loss is lowest at epoch 14 (0.857). frozen learns slower and barely beats no glove.
+>
+> im not running 300d. the model already overfits by epoch 14 at 100d, so i expect 300d to overfit more, and 100d is already giving decent results.
+>
+> what other improvements can we consider next
+
+**AI**
+
+Restricting GloVe to your training vocab is the main reason the gain was small. That's a legitimate choice, but it changes what GloVe can do for you, and it changes what to try next.
+
+### Why GloVe gave only +1.35
+
+GloVe's biggest benefit here was supposed to be the unknown words: giving val/test words that never appear in training a meaningful vector instead of `<UNK>`. If you only load vectors for training words, every unseen word still maps to the untrained `<UNK>` vector, exactly as before. What's left is just a better starting point for words the model already sees. That's worth something (+1.35), but it's the smaller part of the benefit.
+
+This also explains the frozen result. Frozen GloVe on training words only is just a fixed, decent starting point that can't adapt, with no benefit for unknown words. So it learns slower and lands about where random vectors did.
+
+On the rule: your reading is the cautious one, and it's fine to stick with it. For the record, I don't think adding GloVe's own top-N words counts as fitting the vocab on dev/test, because it never looks at them. But it's a judgment call, so if you want that option, ask the TA. Either way, put your reasoning in the report; that's good critical-thinking material.
+
+On 300d: skipping it is fine. I'd give a different reason in the report, though. Your metric peaked at epoch 37 even though val loss was lowest at 14, so early overfitting isn't proven to get worse at 300d. A more solid reason: with the vocab restricted to training words, richer vectors can't help with unknown words, so the expected gain is small.
+
+### A correction to what I said earlier
+
+Last time I suggested comparing test-set slot F1 and the val-to-test gap. That was wrong for your setup: the brief says the test split is only for final evaluation after the model is frozen. Keep all development decisions on val, and run test only on your final Stage-1 and Stage-2 checkpoints.
+
+### What to try next
+
+Unknown words are now clearly your biggest remaining problem, and the two remaining fixes for them both work within your vocab rule.
+
+1. **Measure first** (cheap, and useful for the report). On val, split slot F1 into gold spans that contain an unknown word vs. spans that don't. Do the same for intent accuracy on sentences with vs. without one. If unknown-word spans score far lower, that confirms where to spend effort and gives you a number to improve.
+2. **Word dropout / UNK replacement.** During training, randomly replace tokens with `<UNK>` (e.g. words seen only once, or any token with a small probability). This trains the `<UNK>` vector and teaches the model to tag from context: in "play X by Y", the model learns that the unknown word after "play" is probably a song. It's quick to add, with one rate to tune.
+3. **Character-level encoder.** This is now the most valuable remaining idea. A small char-CNN or char-BiLSTM builds a vector for any word from its spelling, learned only from training data, so it fits your vocab rule. It catches names, plurals ("stomachs"), verb forms ("acted") and patterns like "o'clock". Join it to the GloVe vector before the BiLSTM. It costs few parameters.
+4. **CRF or constrained decoding for slots.** Before building it, count how many val predictions contain invalid BIO sequences (an I- with no matching B- before it). If that number is non-trivial, a CRF or BIO-constrained Viterbi should give a direct slot F1 gain.
+5. **Intent pooling** (max or attention over all token states). Smaller expected gain, but quick to try.
+
+About fine-tuned GloVe overfitting early: a lower learning rate for the embedding layer, or freezing it for the first few epochs, could keep the GloVe benefit while slowing the overfitting. This is optional and lower priority than 2–4.
+
+Timing: the deadline is 13 November. I'd do 1 → 2 → 3 → 4, then stop adding experiments with a few days to spare. You'll still need multi-seed runs of the final config, the final test evaluation, the error analysis, and the two-page report.
+
+---
+
+**User**
+
 > <your next message>
 
 **AI**
