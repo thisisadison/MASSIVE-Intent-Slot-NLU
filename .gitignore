@@ -2,4 +2,6 @@ venv/
 *.tar.gz
 .ipynb_checkpoints/
 __pycache__/
-.DS_Storedata/glove/
+.DS_Store
+data/glove/
+checkpoints/
