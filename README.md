@@ -1,79 +1,91 @@
 # SC4002 — Joint Intent Classification & Slot Filling
 
-NLP group assignment (AY26-27 Sem 1). A single joint model that, for each
-English assistant utterance, predicts its **intent** (one of 60 labels) and
-extracts its **slots** (`[slot type: slot span]` pairs, 55 slot types) on the
-[MASSIVE 1.0](https://github.com/alexa/massive) en-US dataset.
+NLP group assignment (AY26-27 Sem 1). For each English assistant utterance, one
+joint model predicts the **intent** (one of 60 labels, e.g. `alarm_set`) and
+extracts its **slots** (`[slot type: slot span]` pairs, e.g. `[time: five am]`)
+using the [MASSIVE 1.0](https://github.com/alexa/massive) en-US dataset.
 
-The work is split into two stages:
+Everything lives in `notebooks/main.ipynb`. The rest of this README walks through
+what that notebook does, top to bottom, so you can follow the flow before opening it.
 
-- **Stage 1** — an independent LSTM baseline built without generative-AI assistance.
-- **Stage 2** — six experiments, in collaboration with AI, each targeting a specific
-  weakness of the previous model. The final system is a packed **bi-directional
-  LSTM with dropout, GloVe embeddings and a CRF output layer**.
+## The two stages
+
+- **Stage 1 — the baseline.** A plain unidirectional LSTM, built without any AI
+  help. This is the starting point we try to beat.
+- **Stage 2 — the improvements.** Six experiments done in collaboration with AI.
+  Each one looks at where the previous model fell short, makes a single targeted
+  change, and checks whether it actually helped. The winner becomes the final system.
+
+## How the notebook flows
+
+**1. Exploring the data.**
+Load MASSIVE and split it into train / validation / test using the dataset's own
+`partition` field (and assert the official sizes: 11,514 / 2,033 / 2,974). Then look
+around — how intents are distributed, how long utterances are, how many words in the
+dev/test sets are never seen in training, and how often each slot type appears. These
+checks motivate later decisions (for example, lots of unseen words is why GloVe is
+tried in Stage 2).
+
+**2. Turning text into model inputs.**
+Build a vocabulary from the training words and map each word to an integer id. Slots
+are rewritten in **BIO tagging** — every word gets a tag like `B-time` (beginning of a
+time slot), `I-time` (inside/continuation), or `O` (not a slot). So one utterance
+produces three aligned things: word ids, a BIO tag per word, and one intent label.
+Sentences are then padded and batched so they can go through the model together.
+
+**3. Scoring (shared by every experiment).**
+Two metrics, defined once and reused everywhere so comparisons are fair:
+- **Intent accuracy** — did we predict the right intent?
+- **Slot micro-F1** — did we extract the exact right `[slot type: span]` pairs? A
+  match only counts if both the type *and* the full span are correct.
+
+**4. Stage 1: the baseline model.**
+A single network with two heads sharing one LSTM encoder: one head predicts the
+intent for the whole sentence, the other predicts a BIO tag for each word. It is
+trained with both an SGD and an Adam run; Adam wins, and the best epoch's checkpoint
+is saved. Loading that checkpoint and evaluating on the test set gives the baseline
+numbers below.
+
+**5. Stage 2: six experiments.**
+Each builds on the previous best and changes one thing:
+
+| # | Change | Why |
+|---|---|---|
+| 1 | **Packed sequences** | Stop the LSTM reading padding, so the sentence summary isn't blurred. |
+| 2 | **Bi-directional LSTM** | Let each word see context *after* it too, which helps slot boundaries. |
+| 3 | **Dropout** | Exp 2 overfit quickly; dropout forces the model to generalise. |
+| 4 | **Gradient clipping + cosine LR schedule** | Try to stabilise late-training wobble (this one didn't help and was dropped). |
+| 5 | **GloVe embeddings** | Start words from meaningful pretrained vectors instead of random ones. |
+| 6 | **CRF output layer** | Score the whole tag sequence at once so illegal BIO patterns are ruled out. |
+
+Each experiment keeps its per-epoch training/validation curves and saves the best
+checkpoint, so the choices are backed by logged evidence rather than guesswork.
+
+**6. Final evaluation, error analysis, and summary.**
+The best Stage 2 checkpoint (Exp 6, the CRF model) is loaded and evaluated on the test
+set. A short error analysis then prints real failure cases and explains the likely
+causes (e.g. ambiguous words like "pink", or implicit commands with no keywords).
+The notebook ends with a Summary comparing every experiment.
 
 ## Results
 
-Final evaluation on the held-out test split:
+Final test-set performance:
 
 | System | Intent accuracy | Slot micro-F1 |
 |---|---|---|
 | Stage 1 baseline (unidirectional LSTM) | 75.39% | 62.85% |
 | Stage 2 final (BiLSTM + dropout + GloVe + CRF) | 84.70% | 75.85% |
 
-Full per-experiment validation/test numbers and analysis are in the notebook's
-Summary section. The entire system is 820,288 parameters, well within the 20M cap.
+The whole system is 820,288 parameters — well under the 20M cap. Per-experiment
+validation and test numbers, with analysis, are in the notebook's Summary section.
 
-## Repository layout
+## Files
 
 ```
-notebooks/main.ipynb     All source code for both stages: EDA, preprocessing,
-                         shared metrics, models, training logs, and evaluation.
-ai_collaboration.md      Chat history with AI used during Stage 2.
-data/en-US.jsonl         MASSIVE 1.0 en-US data (train/dev/test via partition field).
-data/glove/              GloVe vectors (not tracked — see Setup).
-checkpoints/             Saved model checkpoints (not tracked — regenerated by running).
-requirements.txt         Pinned Python dependencies.
+notebooks/main.ipynb   Everything described above, with its logs and outputs.
+ai_collaboration.md    The AI chat history behind the Stage 2 experiments.
+data/en-US.jsonl       The MASSIVE en-US dataset.
 ```
 
-## Setup
-
-1. Create an environment and install dependencies:
-
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-2. Download GloVe embeddings (not tracked in git). The notebook expects
-   `data/glove/glove.6B.100d.txt`:
-
-   ```bash
-   mkdir -p data/glove
-   curl -L -o data/glove/glove.6B.zip https://nlp.stanford.edu/data/glove.6B.zip
-   unzip data/glove/glove.6B.zip glove.6B.100d.txt -d data/glove
-   ```
-
-3. The MASSIVE data (`data/en-US.jsonl`) is already included. If you need the
-   original archive, it is at
-   [amazon-massive-dataset-1.0.tar.gz](https://amazon-massive-nlu-dataset.s3.amazonaws.com/amazon-massive-dataset-1.0.tar.gz);
-   use `1.0/data/en-US.jsonl`.
-
-## Running
-
-Open and run the notebook top to bottom:
-
-```bash
-jupyter lab notebooks/main.ipynb
-```
-
-Training is reproducible (`SEED = 0`). Running the notebook regenerates the
-checkpoints under `checkpoints/`. The notebook asserts the official split sizes
-(11,514 train / 2,033 dev / 2,974 test) and the parameter cap, so a clean run
-confirms the environment is set up correctly.
-
-## Dataset & license
-
-MASSIVE 1.0 is used under its original license — see `data/LICENSE`,
-`data/NOTICE.md`, and `data/CITATION.md`.
+MASSIVE 1.0 is used under its original license — see `data/LICENSE`, `data/NOTICE.md`,
+and `data/CITATION.md`.
