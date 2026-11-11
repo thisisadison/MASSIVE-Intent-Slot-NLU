@@ -363,12 +363,29 @@ Timing: the deadline is 13 November. I'd do 1 → 2 → 3 → 4, then stop addin
 
 ---
 
+## Chat 2: Xia Hao Cheng
+
+- **AI tool / model used:** ChatGPT (or Claude)
+
+---
+
 **User**
 
-> <your next message>
+> We are currently working on Experiment 6 for Stage 2. Even with GloVe embeddings and dropout, our Slot F1 score (75.05%) is still much lower than our Intent Accuracy (85.04%). The model predicts each word's BIO tag independently. How can we fix illegal tag sequences (e.g., an `I-time` tag appearing without a preceding `B-time`) and improve slot boundary detection without using pre-trained transformer models? Also, we need to ensure the model stays strictly under the 20M parameter limit.
 
 **AI**
 
-<the AI's next reply>
+> The issue you're facing is that your linear tag classifier treats each token independently, lacking awareness of the tag predicted for the previous token. This allows illegal sequences and broken boundaries, which severely hurts exact-match Slot F1 scores.
+>
+> **Suggestion:** You should consider replacing your final linear tag classifier with a **Conditional Random Field (CRF) layer**. 
+>
+> 1. **How it helps:** A CRF considers the entire sequence of tags jointly. It learns a transition matrix that captures the probability of one tag following another. By using Viterbi decoding, it enforces valid BIO sequences and explicitly penalizes illegal transitions.
+> 2. **Parameter constraint:** This is highly efficient. A CRF layer only adds a small number of parameters (a `num_tags × num_tags` transition matrix). In your case, with 107 tags, it only adds about 11,449 parameters, easily keeping you well under the 20M cap.
+>
+> You can place this CRF layer on top of your BiLSTM outputs. During training, use negative log-likelihood; during inference, use Viterbi decoding to find the most probable tag sequence.
 
 ---
+
+**User**
+
+> Ok, I implemented the CRF output layer on top of the BiLSTM, exactly as suggested. The total parameter count is still well within limits. Our final test Slot F1 improved to 75.85% (an +0.80% gain over the non-CRF version), proving that the AI's structural suggestion was highly effective for sequence labeling. We are keeping this for our final model.
